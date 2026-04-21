@@ -195,8 +195,19 @@ struct ContentView: View {
     }
 
     private func formatAmount(_ value: Double) -> String {
-        if value >= 1    { return String(format: "%.2f", value) }
-        if value >= 0.01 { return String(format: "%.4f", value) }
-        return String(format: "%.6f", value)
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        if value >= 1 {
+            formatter.minimumFractionDigits = 2
+            formatter.maximumFractionDigits = 2
+        } else if value >= 0.01 {
+            formatter.minimumFractionDigits = 4
+            formatter.maximumFractionDigits = 4
+        } else {
+            formatter.minimumFractionDigits = 6
+            formatter.maximumFractionDigits = 6
+        }
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 }
