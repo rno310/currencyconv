@@ -9,7 +9,7 @@ private struct RateCache: Codable {
 @MainActor
 final class CurrencyStore: ObservableObject {
     @Published var fromCurrency: Currency = Currency.all.first(where: { $0.code == "USD" })!
-    @Published var toCurrency:   Currency = Currency.all.first(where: { $0.code == "PHP" })!
+    @Published var toCurrency:   Currency = Currency.all.first(where: { $0.code == "EUR" })!
     @Published var rates:        [String: Double] = [:]
     @Published var lastUpdated:  Date? = nil
     @Published var isRefreshing: Bool = false
