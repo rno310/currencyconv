@@ -9,8 +9,9 @@ struct ContentView: View {
     @State private var toText   = ""
     @FocusState private var focused: ConversionField?
 
-    @State private var showFromPicker = false
-    @State private var showToPicker   = false
+    @State private var showFromPicker      = false
+    @State private var showToPicker        = false
+    @State private var showManualRateEntry = false
 
     var body: some View {
         NavigationStack {
@@ -38,32 +39,55 @@ struct ContentView: View {
                 Spacer()
 
                 lastUpdatedLabel
+                    .padding(.bottom, 4)
+
+                Text("Exchange rates by ExchangeRate-API")
+                    .font(.caption2)
+                    .foregroundStyle(Color(.tertiaryLabel))
                     .padding(.bottom, 32)
             }
-            .navigationTitle("Travel Buddy · Currency Converter")
+            .navigationTitle("Exchange-o-matic")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { refreshButton }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button {
+                        fromText = ""
+                        toText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .disabled(fromText.isEmpty && toText.isEmpty)
+                }
             }
-            .sheet(isPresented: $showFromPicker) {
+            // Recalculate after picker dismissal so the swap button's
+            // synchronous text swap is never disrupted by a mid-action recalc.
+            .sheet(isPresented: $showFromPicker, onDismiss: recalculate) {
                 CurrencyPickerView(selected: $store.fromCurrency, excluding: store.toCurrency)
             }
-            .sheet(isPresented: $showToPicker) {
+            .sheet(isPresented: $showToPicker, onDismiss: recalculate) {
                 CurrencyPickerView(selected: $store.toCurrency, excluding: store.fromCurrency)
             }
-            // Bidirectional live conversion — each field only drives when it has focus
+            // Bidirectional live conversion — each field only drives when focused.
+            // applyGrouping reformats with thousand separators as the user types;
+            // returning early triggers a second onChange with the formatted text.
             .onChange(of: fromText) { _, new in
                 guard focused == .from else { return }
+                let reformatted = applyGrouping(new)
+                if reformatted != new { fromText = reformatted; return }
                 toText = converted(new, from: store.fromCurrency, to: store.toCurrency)
             }
             .onChange(of: toText) { _, new in
                 guard focused == .to else { return }
+                let reformatted = applyGrouping(new)
+                if reformatted != new { toText = reformatted; return }
                 fromText = converted(new, from: store.toCurrency, to: store.fromCurrency)
             }
-            // Recalculate when currency selection or rates change
-            .onChange(of: store.fromCurrency) { _, _ in recalculate() }
-            .onChange(of: store.toCurrency)   { _, _ in recalculate() }
-            .onChange(of: store.lastUpdated)  { _, _ in recalculate() }
+            .onChange(of: store.lastUpdated) { _, _ in recalculate() }
+            .sheet(isPresented: $showManualRateEntry) {
+                ManualRateEntryView(store: store)
+            }
         }
     }
 
@@ -107,7 +131,7 @@ struct ContentView: View {
 
                 TextField("0", text: text)
                     .keyboardType(.decimalPad)
-                    .font(.system(size: 36, weight: .light, design: .rounded))
+                    .font(.system(size: 48, weight: .light, design: .rounded))
                     .multilineTextAlignment(.trailing)
                     .focused($focused, equals: field)
             }
@@ -120,8 +144,7 @@ struct ContentView: View {
         HStack {
             Group {
                 if let r = store.rateDisplay {
-                    Text(r)
-                        .foregroundStyle(store.isRateStale ? .red : .secondary)
+                    Text(r).foregroundStyle(.secondary)
                 } else {
                     Text(store.isRefreshing ? "Fetching rates…" : "Rate unavailable")
                         .foregroundStyle(.secondary)
@@ -152,9 +175,19 @@ struct ContentView: View {
             if store.isCacheExpired {
                 Text("Rates may be outdated — please connect to refresh")
                     .foregroundStyle(.red)
-            } else if let d = store.lastUpdated {
-                Text("Rates updated \(d.formatted(.relative(presentation: .named)))")
-                    .foregroundStyle(store.isRateStale ? .red : Color(.tertiaryLabel))
+            } else if let d = store.effectiveLastUpdated {
+                let prefix = store.isManualRate ? "Rates manually updated" : "Rates updated"
+                let label  = "\(prefix) \(d.formatted(.relative(presentation: .named)))"
+                if store.isRateStale {
+                    Button { showManualRateEntry = true } label: {
+                        Text("\(label) · Manual entry?")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(label)
+                        .foregroundStyle(Color(.tertiaryLabel))
+                }
             } else {
                 Text(store.isRefreshing ? "Fetching rates…" : "No rates cached — connect to download")
                     .foregroundStyle(.secondary)
@@ -178,9 +211,28 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
+    /// Adds thousand-separator grouping while preserving a trailing decimal point
+    /// so the user can keep typing digits after ".".
+    private func applyGrouping(_ raw: String) -> String {
+        guard !raw.isEmpty else { return raw }
+        let stripped = raw.replacingOccurrences(of: ",", with: "")
+        let parts = stripped.components(separatedBy: ".")
+        let intStr = parts[0]
+        guard let intVal = Double(intStr.isEmpty ? "0" : intStr) else { return raw }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.maximumFractionDigits = 0
+        formatter.locale = Locale(identifier: "en_US")
+        let formattedInt = formatter.string(from: NSNumber(value: intVal)) ?? intStr
+        return parts.count > 1 ? formattedInt + "." + parts[1] : formattedInt
+    }
+
+    /// Strips commas before parsing so formatted values (e.g. "1,234.56") round-trip correctly.
     private func converted(_ text: String, from: Currency, to: Currency) -> String {
-        guard !text.isEmpty,
-              let amount = Double(text),
+        let stripped = text.replacingOccurrences(of: ",", with: "")
+        guard !stripped.isEmpty,
+              let amount = Double(stripped),
               let result = store.convert(amount: amount, from: from, to: to)
         else { return "" }
         return formatAmount(result)
@@ -198,6 +250,7 @@ struct ContentView: View {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.usesGroupingSeparator = true
+        formatter.locale = Locale(identifier: "en_US")
         if value >= 1 {
             formatter.minimumFractionDigits = 2
             formatter.maximumFractionDigits = 2
